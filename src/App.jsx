@@ -166,11 +166,14 @@ function getBestMarket(m,allowed){
 // ─────────────────────────────────────────────
 // 📡 SOFASCORE API — correct host
 // ─────────────────────────────────────────────
-async function fetchScheduledEvents(tournamentId){
+async function fetchScheduledEvents(dateStr){
   try{
     const res=await fetch(
-      `${SOFA_BASE}/unique-tournament/${tournamentId}/scheduled-events/next/0`,
-      {headers:SOFA_HEADERS}
+      `https://apidojo.p.rapidapi.com/api/v1/sport/football/scheduled-events/${dateStr}`,
+      {headers:{
+        "x-rapidapi-key": RAPIDAPI_KEY,
+        "x-rapidapi-host": "apidojo.p.rapidapi.com"
+      }}
     );
     if(!res.ok)return[];
     const data=await res.json();
@@ -385,7 +388,7 @@ export default function WinSmart(){
       const allEvents=[];
       const toFetch=SOFA_TOURNAMENTS.filter(t=>selTournaments.includes(t.id)).slice(0,6);
       for(const t of toFetch){
-        const events=await fetchScheduledEvents(t.id);
+        const events=await fetchScheduledEvents(getDateStr(0));
         for(const ev of events.slice(0,4)){
           if(ev.status?.type==="notstarted"||!ev.status){
             allEvents.push(parseEvent(ev,t));
