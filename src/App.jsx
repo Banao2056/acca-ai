@@ -53,18 +53,24 @@ function todayStr(offset = 0) {
   return d.toISOString().split("T")[0];
 }
 
-// Fetch fixtures for a date range
+// Fetch fixtures - free tier requires league+season OR just date
 async function fetchFixtures() {
-  const from = todayStr(0);
-  const to   = todayStr(6);
+  const all = [];
 
-  // Single call — get all fixtures for next 7 days
-  const fixtures = await apiFetch(
-    `/fixtures?from=${from}&to=${to}&status=NS&timezone=Africa/Lagos`
-  );
+  // Fetch by date for today + next 6 days
+  // /fixtures?date=YYYY-MM-DD works on free tier without extra params
+  for (let i = 0; i < 7; i++) {
+    try {
+      const date = todayStr(i);
+      const fixtures = await apiFetch(`/fixtures?date=${date}`);
+      all.push(...fixtures);
+      // Respect rate limit - 10 requests/minute on free tier
+      if (i < 6) await new Promise(r => setTimeout(r, 700));
+    } catch { continue; }
+  }
 
-  return fixtures
-    .filter(f => f.fixture?.status?.short === "NS") // Not Started only
+  return all
+    .filter(f => f.fixture?.status?.short === "NS")
     .map(parseFixture)
     .filter(Boolean)
     .sort((a, b) => a.timestamp - b.timestamp);
