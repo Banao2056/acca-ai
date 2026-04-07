@@ -1,191 +1,223 @@
 import { useState, useEffect } from "react";
 
-// ─── KEYS ────────────────────────────────────────────────────
-const RAPIDAPI_KEY = import.meta.env.VITE_RAPIDAPI_KEY || "";
+// ─────────────────────────────────────────────────────────────
+// API KEY - comes from Vercel environment variable
+// Go to vercel.com → your project → Settings → Environment Variables
+// Add: VITE_FOOTBALL_KEY = your football-data.org key
+// ─────────────────────────────────────────────────────────────
+const FOOTBALL_KEY = import.meta.env.VITE_FOOTBALL_KEY || "";
 const ANTHROPIC_KEY = import.meta.env.VITE_ANTHROPIC_KEY || "";
-const HAS_KEY = RAPIDAPI_KEY.length > 10;
+const HAS_KEY = FOOTBALL_KEY.length > 5;
 
-// ─── SOFASCORE API ───────────────────────────────────────────
-// This endpoint is confirmed working from your JSON test
-const SOFA_HOST = "sofascore.p.rapidapi.com";
+// ─────────────────────────────────────────────────────────────
+// FOOTBALL-DATA.ORG API
+// Free tier supports: PL, CL, PD, BL1, SA, FL1, DED, PPL, ELC
+// ─────────────────────────────────────────────────────────────
+const LEAGUES = [
+  { code:"PL",  name:"Premier League",    country:"England",     flag:"🏴󠁧󠁢󠁥󠁮󠁧󠁿", tier:1 },
+  { code:"CL",  name:"Champions League",  country:"Europe",      flag:"🏆", tier:1 },
+  { code:"PD",  name:"La Liga",           country:"Spain",       flag:"🇪🇸", tier:1 },
+  { code:"BL1", name:"Bundesliga",        country:"Germany",     flag:"🇩🇪", tier:1 },
+  { code:"SA",  name:"Serie A",           country:"Italy",       flag:"🇮🇹", tier:1 },
+  { code:"FL1", name:"Ligue 1",           country:"France",      flag:"🇫🇷", tier:1 },
+  { code:"ELC", name:"Championship",      country:"England",     flag:"🏴󠁧󠁢󠁥󠁮󠁧󠁿", tier:2 },
+  { code:"DED", name:"Eredivisie",        country:"Netherlands", flag:"🇳🇱", tier:2 },
+  { code:"PPL", name:"Primeira Liga",     country:"Portugal",    flag:"🇵🇹", tier:2 },
+];
 
-async function sofaFetch(path) {
-  const res = await fetch(`https://sofascore.p.rapidapi.com/api/v1${path}`, {
-    headers: {
-      "x-rapidapi-key": RAPIDAPI_KEY,
-      "x-rapidapi-host": SOFA_HOST,
-    },
-  });
-  if (!res.ok) throw new Error(`${res.status}`);
-  return res.json();
-}
+async function fetchMatches() {
+  // Get today and next 7 days
+  const today = new Date();
+  const end = new Date();
+  end.setDate(end.getDate() + 7);
+  const dateFrom = today.toISOString().split("T")[0];
+  const dateTo = end.toISOString().split("T")[0];
 
-// Get today's and tomorrow's scheduled football events
-async function getLiveMatches() {
-  const now = new Date();
-  const dates = [0, 1].map(offset => {
-    const d = new Date(now);
-    d.setDate(d.getDate() + offset);
-    return d.toISOString().split("T")[0];
-  });
+  const all = [];
 
-  const results = [];
-  for (const date of dates) {
+  for (const league of LEAGUES) {
     try {
-      // This is the confirmed working endpoint from your Sofascore subscription
-      const data = await sofaFetch(`/sport/football/scheduled-events/${date}`);
-      if (data.events) results.push(...data.events);
-    } catch (e) {
-      console.warn("fetch failed for", date, e.message);
+      const res = await fetch(
+        `https://api.football-data.org/v4/competitions/${league.code}/matches?dateFrom=${dateFrom}&dateTo=${dateTo}&status=SCHEDULED`,
+        { headers: { "X-Auth-Token": FOOTBALL_KEY } }
+      );
+      if (!res.ok) continue;
+      const data = await res.json();
+      if (data.matches) {
+        for (const m of data.matches) {
+          all.push(parseMatch(m, league));
+        }
+      }
+      // Small delay to avoid rate limiting
+      await new Promise(r => setTimeout(r, 200));
+    } catch {
+      continue;
     }
   }
-  return results;
+
+  return all.sort((a, b) => a.timestamp - b.timestamp);
 }
 
-// ─── DATE HELPERS ─────────────────────────────────────────────
-const fmt = (offset = 0) => {
-  const d = new Date();
-  d.setDate(d.getDate() + offset);
-  return d.toISOString().split("T")[0];
-};
-const dayName = (offset) => {
-  if (offset === 0) return "Today";
-  if (offset === 1) return "Tomorrow";
-  const d = new Date();
-  d.setDate(d.getDate() + offset);
-  return d.toLocaleDateString("en-GB", { weekday: "short", day: "numeric", month: "short" });
-};
-const toTime = (ts) =>
-  new Date(ts * 1000).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" });
+function parseMatch(m, league) {
+  const dt = new Date(m.utcDate);
+  const date = dt.toISOString().split("T")[0];
+  const time = dt.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" });
 
-// ─── PARSE SOFASCORE EVENT ────────────────────────────────────
-function parseEvent(ev) {
-  const league = ev.tournament?.uniqueTournament?.name || ev.tournament?.name || "Football";
-  const country = ev.tournament?.category?.name || "";
-  const tid = ev.tournament?.uniqueTournament?.id || 0;
-  const topIds = [17,8,35,23,34,7,679,18,24,25,37,238,52,36,703,352,242,760,45,200,955];
-  const tier = topIds.slice(0,10).includes(tid) ? 1 : topIds.includes(tid) ? 2 : 3;
-  const ts = ev.startTimestamp || 0;
-  const date = new Date(ts * 1000).toISOString().split("T")[0];
-  const time = toTime(ts);
-  const home = ev.homeTeam?.name || "Home";
-  const away = ev.awayTeam?.name || "Away";
+  const home = m.homeTeam?.name || m.homeTeam?.shortName || "Home";
+  const away = m.awayTeam?.name || m.awayTeam?.shortName || "Away";
 
-  // Basic probability estimation
-  const avgG = tier === 1 ? 2.7 : tier === 2 ? 2.4 : 2.1;
-  const hp = 46, dp = 26, ap = 28;
+  // Estimate probabilities from odds if available, else use defaults
+  const odds = m.odds;
+  let hodd = odds?.homeWin || 2.10;
+  let dodd = odds?.draw || 3.40;
+  let aodd = odds?.awayWin || 3.50;
+
+  // Convert odds to probabilities
+  const rawH = 1/hodd, rawD = 1/dodd, rawA = 1/aodd;
+  const total = rawH + rawD + rawA;
+  const hp = Math.round((rawH/total)*100);
+  const dp = Math.round((rawD/total)*100);
+  const ap = Math.round((rawA/total)*100);
+
+  const avgG = league.tier === 1 ? 2.7 : 2.3;
   const o25 = Math.round(38 + (avgG - 2) * 16);
   const o15 = Math.min(o25 + 22, 92);
-  const btts = 55;
+  const btts = Math.round((hp * 0.55 + ap * 0.65));
 
   return {
-    id: ev.id,
-    home, away, league, country, tier, time, date,
-    hp, dp, ap, btts, o15, o25,
-    conf: tier === 1 ? 78 : 65,
-    hodd: 2.10, dodd: 3.40, aodd: 3.50,
-    ca: tier === 1 ? 10.2 : 8.8,
+    id: m.id,
+    home, away,
+    league: league.name,
+    leagueCode: league.code,
+    country: league.country,
+    flag: league.flag,
+    tier: league.tier,
+    time, date,
+    timestamp: dt.getTime(),
+    hp: Math.min(Math.max(hp, 15), 80),
+    dp: Math.min(Math.max(dp, 8), 38),
+    ap: Math.min(Math.max(ap, 12), 70),
+    btts: Math.min(Math.max(btts, 30), 78),
+    o15: Math.min(Math.max(o15, 52), 92),
+    o25: Math.min(Math.max(o25, 25), 78),
+    conf: league.tier === 1 ? 80 : 66,
+    hodd: parseFloat(hodd.toFixed(2)),
+    dodd: parseFloat(dodd.toFixed(2)),
+    aodd: parseFloat(aodd.toFixed(2)),
+    ca: league.tier === 1 ? 10.2 : 8.8,
     cr: 3.8,
-    hForm: "WWDLW", aForm: "LWWDL",
-    status: ev.status?.type || "notstarted",
+    hForm: "WWDLW",
+    aForm: "LWWDL",
   };
 }
 
-// ─── DEMO DATA ────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────
+// DEMO DATA - shown when no API key
+// ─────────────────────────────────────────────────────────────
+function dStr(offset = 0) {
+  const d = new Date();
+  d.setDate(d.getDate() + offset);
+  return d.toISOString().split("T")[0];
+}
+
 const DEMO = [
-  { id:1,  home:"Arsenal",       away:"Chelsea",      league:"Premier League",  country:"England",     tier:1, time:"15:00", date:fmt(0), hp:63, dp:21, ap:16, btts:71, o15:88, o25:67, conf:89, hodd:1.62, dodd:3.90, aodd:5.20, ca:10.8, cr:4.1, hForm:"WWDWW", aForm:"LWDLW" },
-  { id:2,  home:"Real Madrid",   away:"Barcelona",    league:"La Liga",         country:"Spain",       tier:1, time:"20:00", date:fmt(0), hp:48, dp:27, ap:25, btts:78, o15:91, o25:74, conf:82, hodd:2.10, dodd:3.40, aodd:3.60, ca:11.2, cr:4.8, hForm:"WWWDW", aForm:"WLWWW" },
-  { id:3,  home:"Bayern Munich", away:"Dortmund",     league:"Bundesliga",      country:"Germany",     tier:1, time:"17:30", date:fmt(0), hp:57, dp:23, ap:20, btts:65, o15:93, o25:72, conf:91, hodd:1.85, dodd:3.70, aodd:4.10, ca:10.4, cr:3.6, hForm:"WWWWW", aForm:"WDWLW" },
-  { id:4,  home:"Juventus",      away:"Inter Milan",  league:"Serie A",         country:"Italy",       tier:1, time:"19:45", date:fmt(0), hp:42, dp:31, ap:27, btts:58, o15:79, o25:55, conf:76, hodd:2.40, dodd:3.20, aodd:3.10, ca:9.1,  cr:4.5, hForm:"DWWLD", aForm:"WWDWL" },
-  { id:5,  home:"PSG",           away:"Marseille",    league:"Ligue 1",         country:"France",      tier:1, time:"21:00", date:fmt(0), hp:72, dp:17, ap:11, btts:62, o15:90, o25:69, conf:94, hodd:1.40, dodd:4.50, aodd:7.00, ca:10.1, cr:5.2, hForm:"WWWWW", aForm:"LWLLW" },
-  { id:6,  home:"Man City",      away:"Liverpool",    league:"Premier League",  country:"England",     tier:1, time:"16:30", date:fmt(1), hp:44, dp:26, ap:30, btts:73, o15:89, o25:71, conf:87, hodd:2.30, dodd:3.40, aodd:3.10, ca:11.5, cr:3.9, hForm:"WWLWW", aForm:"WWWDW" },
-  { id:7,  home:"Ajax",          away:"PSV",          league:"Eredivisie",      country:"Netherlands", tier:1, time:"14:30", date:fmt(1), hp:52, dp:24, ap:24, btts:69, o15:92, o25:76, conf:80, hodd:2.00, dodd:3.50, aodd:3.80, ca:10.7, cr:3.4, hForm:"WWDWL", aForm:"WWWWL" },
-  { id:8,  home:"Enugu Rangers", away:"Enyimba",      league:"NPFL",            country:"Nigeria",     tier:2, time:"16:00", date:fmt(1), hp:47, dp:29, ap:24, btts:52, o15:70, o25:45, conf:65, hodd:2.20, dodd:3.10, aodd:3.60, ca:7.4,  cr:3.8, hForm:"WDWLW", aForm:"LWDWL" },
-  { id:9,  home:"Atletico",      away:"Sevilla",      league:"La Liga",         country:"Spain",       tier:1, time:"18:00", date:fmt(2), hp:59, dp:25, ap:16, btts:48, o15:75, o25:52, conf:79, hodd:1.75, dodd:3.60, aodd:4.80, ca:8.8,  cr:4.7, hForm:"WWWDW", aForm:"LLDWL" },
-  { id:10, home:"Al-Hilal",      away:"Al-Nassr",     league:"Saudi Pro Lg",    country:"Saudi Arabia",tier:1, time:"19:00", date:fmt(3), hp:54, dp:26, ap:20, btts:59, o15:82, o25:61, conf:75, hodd:1.90, dodd:3.50, aodd:4.30, ca:9.0,  cr:4.0, hForm:"WWWDW", aForm:"LWWDW" },
-  { id:11, home:"Flamengo",      away:"Palmeiras",    league:"Brasileirao",     country:"Brazil",      tier:1, time:"22:00", date:fmt(3), hp:45, dp:28, ap:27, btts:63, o15:80, o25:57, conf:73, hodd:2.30, dodd:3.20, aodd:3.40, ca:9.2,  cr:4.4, hForm:"DWWLW", aForm:"WLWWL" },
-  { id:12, home:"Club America",  away:"Chivas",       league:"Liga MX",         country:"Mexico",      tier:1, time:"02:00", date:fmt(4), hp:48, dp:28, ap:24, btts:61, o15:81, o25:58, conf:74, hodd:2.15, dodd:3.20, aodd:3.70, ca:9.4,  cr:4.0, hForm:"WWLWW", aForm:"DWLWL" },
+  { id:1,  home:"Arsenal",        away:"Chelsea",      league:"Premier League",  country:"England",     flag:"🏴󠁧󠁢󠁥󠁮󠁧󠁿", tier:1, time:"15:00", date:dStr(0), hp:63, dp:21, ap:16, btts:71, o15:88, o25:67, conf:89, hodd:1.62, dodd:3.90, aodd:5.20, ca:10.8, cr:4.1, hForm:"WWDWW", aForm:"LWDLW" },
+  { id:2,  home:"Real Madrid",    away:"Barcelona",    league:"La Liga",         country:"Spain",       flag:"🇪🇸", tier:1, time:"20:00", date:dStr(0), hp:48, dp:27, ap:25, btts:78, o15:91, o25:74, conf:82, hodd:2.10, dodd:3.40, aodd:3.60, ca:11.2, cr:4.8, hForm:"WWWDW", aForm:"WLWWW" },
+  { id:3,  home:"Bayern Munich",  away:"Dortmund",     league:"Bundesliga",      country:"Germany",     flag:"🇩🇪", tier:1, time:"17:30", date:dStr(0), hp:57, dp:23, ap:20, btts:65, o15:93, o25:72, conf:91, hodd:1.85, dodd:3.70, aodd:4.10, ca:10.4, cr:3.6, hForm:"WWWWW", aForm:"WDWLW" },
+  { id:4,  home:"Juventus",       away:"Inter Milan",  league:"Serie A",         country:"Italy",       flag:"🇮🇹", tier:1, time:"19:45", date:dStr(0), hp:42, dp:31, ap:27, btts:58, o15:79, o25:55, conf:76, hodd:2.40, dodd:3.20, aodd:3.10, ca:9.1,  cr:4.5, hForm:"DWWLD", aForm:"WWDWL" },
+  { id:5,  home:"PSG",            away:"Marseille",    league:"Ligue 1",         country:"France",      flag:"🇫🇷", tier:1, time:"21:00", date:dStr(0), hp:72, dp:17, ap:11, btts:62, o15:90, o25:69, conf:94, hodd:1.40, dodd:4.50, aodd:7.00, ca:10.1, cr:5.2, hForm:"WWWWW", aForm:"LWLLW" },
+  { id:6,  home:"Man City",       away:"Liverpool",    league:"Premier League",  country:"England",     flag:"🏴󠁧󠁢󠁥󠁮󠁧󠁿", tier:1, time:"16:30", date:dStr(1), hp:44, dp:26, ap:30, btts:73, o15:89, o25:71, conf:87, hodd:2.30, dodd:3.40, aodd:3.10, ca:11.5, cr:3.9, hForm:"WWLWW", aForm:"WWWDW" },
+  { id:7,  home:"Ajax",           away:"PSV",          league:"Eredivisie",      country:"Netherlands", flag:"🇳🇱", tier:1, time:"14:30", date:dStr(1), hp:52, dp:24, ap:24, btts:69, o15:92, o25:76, conf:80, hodd:2.00, dodd:3.50, aodd:3.80, ca:10.7, cr:3.4, hForm:"WWDWL", aForm:"WWWWL" },
+  { id:8,  home:"Atletico",       away:"Sevilla",      league:"La Liga",         country:"Spain",       flag:"🇪🇸", tier:1, time:"18:00", date:dStr(1), hp:59, dp:25, ap:16, btts:48, o15:75, o25:52, conf:79, hodd:1.75, dodd:3.60, aodd:4.80, ca:8.8,  cr:4.7, hForm:"WWWDW", aForm:"LLDWL" },
+  { id:9,  home:"Tottenham",      away:"Newcastle",    league:"Premier League",  country:"England",     flag:"🏴󠁧󠁢󠁥󠁮󠁧󠁿", tier:1, time:"14:00", date:dStr(2), hp:48, dp:26, ap:26, btts:66, o15:84, o25:62, conf:82, hodd:2.20, dodd:3.40, aodd:3.40, ca:10.2, cr:4.0, hForm:"WLDWW", aForm:"WWLWL" },
+  { id:10, home:"AC Milan",       away:"Roma",         league:"Serie A",         country:"Italy",       flag:"🇮🇹", tier:1, time:"19:45", date:dStr(2), hp:50, dp:27, ap:23, btts:60, o15:80, o25:58, conf:77, hodd:2.00, dodd:3.40, aodd:3.80, ca:9.5,  cr:4.2, hForm:"WWDLW", aForm:"LWWDL" },
+  { id:11, home:"Dortmund",       away:"Leipzig",      league:"Bundesliga",      country:"Germany",     flag:"🇩🇪", tier:1, time:"17:30", date:dStr(3), hp:46, dp:28, ap:26, btts:64, o15:85, o25:63, conf:78, hodd:2.25, dodd:3.30, aodd:3.50, ca:10.0, cr:3.7, hForm:"WDWWL", aForm:"LWWWL" },
+  { id:12, home:"Sporting CP",    away:"Benfica",      league:"Primeira Liga",   country:"Portugal",    flag:"🇵🇹", tier:2, time:"20:30", date:dStr(3), hp:45, dp:27, ap:28, btts:67, o15:83, o25:60, conf:74, hodd:2.30, dodd:3.30, aodd:3.30, ca:9.3,  cr:4.1, hForm:"WWWLD", aForm:"DWWWL" },
 ];
 
-// ─── MARKETS ──────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────
+// MARKETS - 43 types
+// ─────────────────────────────────────────────────────────────
 const MARKETS = [
-  { id:"over05",   label:"Over 0.5 Goals",      short:"O0.5",   cat:"Goals",         wr:91 },
-  { id:"over15",   label:"Over 1.5 Goals",      short:"O1.5",   cat:"Goals",         wr:74 },
-  { id:"over25",   label:"Over 2.5 Goals",      short:"O2.5",   cat:"Goals",         wr:51 },
-  { id:"over35",   label:"Over 3.5 Goals",      short:"O3.5",   cat:"Goals",         wr:29 },
-  { id:"over45",   label:"Over 4.5 Goals",      short:"O4.5",   cat:"Goals",         wr:12 },
-  { id:"under15",  label:"Under 1.5 Goals",     short:"U1.5",   cat:"Goals",         wr:21 },
-  { id:"under25",  label:"Under 2.5 Goals",     short:"U2.5",   cat:"Goals",         wr:36 },
-  { id:"btts",     label:"BTTS Yes",            short:"GG",     cat:"Goals",         wr:58 },
-  { id:"btts_no",  label:"BTTS No",             short:"NG",     cat:"Goals",         wr:32 },
-  { id:"home",     label:"Home Win",            short:"1",      cat:"Result",        wr:54 },
-  { id:"draw",     label:"Draw",                short:"X",      cat:"Result",        wr:26 },
-  { id:"away",     label:"Away Win",            short:"2",      cat:"Result",        wr:38 },
-  { id:"dc1x",     label:"Double Chance 1X",    short:"1X",     cat:"Double Chance", wr:68 },
-  { id:"dcx2",     label:"Double Chance X2",    short:"X2",     cat:"Double Chance", wr:65 },
-  { id:"dc12",     label:"Double Chance 12",    short:"12",     cat:"Double Chance", wr:63 },
-  { id:"dnbh",     label:"Draw No Bet Home",    short:"DNB-H",  cat:"Special",       wr:49 },
-  { id:"dnba",     label:"Draw No Bet Away",    short:"DNB-A",  cat:"Special",       wr:44 },
-  { id:"csh",      label:"Clean Sheet Home",    short:"CS-H",   cat:"Special",       wr:28 },
-  { id:"csa",      label:"Clean Sheet Away",    short:"CS-A",   cat:"Special",       wr:22 },
-  { id:"htft",     label:"HT/FT Home/Home",     short:"H/H",    cat:"HT/FT",         wr:18 },
-  { id:"wehh",     label:"Home Win Either Half",short:"WEH-H",  cat:"Win Either Half",wr:62 },
-  { id:"weha",     label:"Away Win Either Half",short:"WEH-A",  cat:"Win Either Half",wr:48 },
-  { id:"ahch",     label:"Asian HDP Home -0.5", short:"AH-H",   cat:"Handicap",      wr:51 },
-  { id:"ahca",     label:"Asian HDP Away -0.5", short:"AH-A",   cat:"Handicap",      wr:44 },
-  { id:"ehch",     label:"Euro HDP Home +1",    short:"EH+H",   cat:"Handicap",      wr:71 },
-  { id:"ehca",     label:"Euro HDP Away +1",    short:"EH+A",   cat:"Handicap",      wr:58 },
-  { id:"co85",     label:"Corners Over 8.5",    short:"C O8.5", cat:"Corners",       wr:55 },
-  { id:"co95",     label:"Corners Over 9.5",    short:"C O9.5", cat:"Corners",       wr:42 },
-  { id:"co105",    label:"Corners Over 10.5",   short:"C O10.5",cat:"Corners",       wr:31 },
-  { id:"cu85",     label:"Corners Under 8.5",   short:"C U8.5", cat:"Corners",       wr:45 },
-  { id:"cdo35",    label:"Cards Over 3.5",      short:"Cd O3.5",cat:"Cards",         wr:52 },
-  { id:"cdo45",    label:"Cards Over 4.5",      short:"Cd O4.5",cat:"Cards",         wr:38 },
-  { id:"cdu35",    label:"Cards Under 3.5",     short:"Cd U3.5",cat:"Cards",         wr:48 },
-  { id:"hao25",    label:"Home Win & Over 2.5", short:"1&O2.5", cat:"Combo",         wr:36 },
-  { id:"hau25",    label:"Home Win & Under 2.5",short:"1&U2.5", cat:"Combo",         wr:22 },
-  { id:"aao25",    label:"Away Win & Over 2.5", short:"2&O2.5", cat:"Combo",         wr:24 },
-  { id:"hagg",     label:"Home Win & BTTS",     short:"1&GG",   cat:"Combo",         wr:31 },
-  { id:"aagg",     label:"Away Win & BTTS",     short:"2&GG",   cat:"Combo",         wr:22 },
-  { id:"hoo25",    label:"Home Win or Over 2.5",short:"1/O2.5", cat:"Win Or",        wr:78 },
-  { id:"hogg",     label:"Home Win or BTTS",    short:"1/GG",   cat:"Win Or",        wr:74 },
-  { id:"aoo25",    label:"Away Win or Over 2.5",short:"2/O2.5", cat:"Win Or",        wr:71 },
-  { id:"hou25",    label:"Home or Under 2.5",   short:"1/U2.5", cat:"Win Or",        wr:68 },
-  { id:"aou25",    label:"Away or Under 2.5",   short:"2/U2.5", cat:"Win Or",        wr:65 },
+  { id:"over05",  label:"Over 0.5 Goals",      short:"O0.5",    cat:"Goals",          wr:91 },
+  { id:"over15",  label:"Over 1.5 Goals",      short:"O1.5",    cat:"Goals",          wr:74 },
+  { id:"over25",  label:"Over 2.5 Goals",      short:"O2.5",    cat:"Goals",          wr:51 },
+  { id:"over35",  label:"Over 3.5 Goals",      short:"O3.5",    cat:"Goals",          wr:29 },
+  { id:"over45",  label:"Over 4.5 Goals",      short:"O4.5",    cat:"Goals",          wr:12 },
+  { id:"under15", label:"Under 1.5 Goals",     short:"U1.5",    cat:"Goals",          wr:21 },
+  { id:"under25", label:"Under 2.5 Goals",     short:"U2.5",    cat:"Goals",          wr:36 },
+  { id:"btts",    label:"BTTS Yes",            short:"GG",      cat:"Goals",          wr:58 },
+  { id:"bttsno",  label:"BTTS No",             short:"NG",      cat:"Goals",          wr:32 },
+  { id:"home",    label:"Home Win",            short:"1",       cat:"Result",         wr:54 },
+  { id:"draw",    label:"Draw",               short:"X",       cat:"Result",         wr:26 },
+  { id:"away",    label:"Away Win",            short:"2",       cat:"Result",         wr:38 },
+  { id:"dc1x",    label:"Double Chance 1X",    short:"1X",      cat:"Double Chance",  wr:68 },
+  { id:"dcx2",    label:"Double Chance X2",    short:"X2",      cat:"Double Chance",  wr:65 },
+  { id:"dc12",    label:"Double Chance 12",    short:"12",      cat:"Double Chance",  wr:63 },
+  { id:"dnbh",    label:"Draw No Bet Home",    short:"DNB-H",   cat:"Special",        wr:49 },
+  { id:"dnba",    label:"Draw No Bet Away",    short:"DNB-A",   cat:"Special",        wr:44 },
+  { id:"csh",     label:"Clean Sheet Home",    short:"CS-H",    cat:"Special",        wr:28 },
+  { id:"csa",     label:"Clean Sheet Away",    short:"CS-A",    cat:"Special",        wr:22 },
+  { id:"htft",    label:"HT/FT Home/Home",     short:"H/H",     cat:"HT/FT",          wr:18 },
+  { id:"wehh",    label:"Home Win Either Half",short:"WEH-H",   cat:"Win Either Half", wr:62 },
+  { id:"weha",    label:"Away Win Either Half",short:"WEH-A",   cat:"Win Either Half", wr:48 },
+  { id:"ahch",    label:"Asian HDP Home -0.5", short:"AH-H",    cat:"Handicap",       wr:51 },
+  { id:"ahca",    label:"Asian HDP Away -0.5", short:"AH-A",    cat:"Handicap",       wr:44 },
+  { id:"ehch",    label:"Euro HDP Home +1",    short:"EH+H",    cat:"Handicap",       wr:71 },
+  { id:"ehca",    label:"Euro HDP Away +1",    short:"EH+A",    cat:"Handicap",       wr:58 },
+  { id:"co85",    label:"Corners Over 8.5",    short:"C O8.5",  cat:"Corners",        wr:55 },
+  { id:"co95",    label:"Corners Over 9.5",    short:"C O9.5",  cat:"Corners",        wr:42 },
+  { id:"co105",   label:"Corners Over 10.5",   short:"C O10.5", cat:"Corners",        wr:31 },
+  { id:"cu85",    label:"Corners Under 8.5",   short:"C U8.5",  cat:"Corners",        wr:45 },
+  { id:"cdo35",   label:"Cards Over 3.5",      short:"Cd O3.5", cat:"Cards",          wr:52 },
+  { id:"cdo45",   label:"Cards Over 4.5",      short:"Cd O4.5", cat:"Cards",          wr:38 },
+  { id:"cdu35",   label:"Cards Under 3.5",     short:"Cd U3.5", cat:"Cards",          wr:48 },
+  { id:"hao25",   label:"Home Win & Over 2.5", short:"1&O2.5",  cat:"Combo",          wr:36 },
+  { id:"hau25",   label:"Home Win & Under 2.5",short:"1&U2.5",  cat:"Combo",          wr:22 },
+  { id:"aao25",   label:"Away Win & Over 2.5", short:"2&O2.5",  cat:"Combo",          wr:24 },
+  { id:"hagg",    label:"Home Win & BTTS",     short:"1&GG",    cat:"Combo",          wr:31 },
+  { id:"aagg",    label:"Away Win & BTTS",     short:"2&GG",    cat:"Combo",          wr:22 },
+  { id:"hoo25",   label:"Home Win or Over 2.5",short:"1/O2.5",  cat:"Win Or",         wr:78 },
+  { id:"hogg",    label:"Home Win or BTTS",    short:"1/GG",    cat:"Win Or",         wr:74 },
+  { id:"aoo25",   label:"Away Win or Over 2.5",short:"2/O2.5",  cat:"Win Or",         wr:71 },
+  { id:"hou25",   label:"Home or Under 2.5",   short:"1/U2.5",  cat:"Win Or",         wr:68 },
+  { id:"aou25",   label:"Away or Under 2.5",   short:"2/U2.5",  cat:"Win Or",         wr:65 },
 ];
 const MCATS = ["Goals","Result","Double Chance","Special","HT/FT","Win Either Half","Handicap","Corners","Cards","Combo","Win Or"];
 const LEG_WR = {3:62,4:54,5:45,6:38,7:31,8:25,9:20,10:17,11:14,12:11,13:9,14:7,15:6,16:5,17:4,18:4,19:3,20:3,25:1,30:1,35:0.5,40:0.3,45:0.1,50:0.1};
 
-// ─── PROBABILITY ENGINE ───────────────────────────────────────
+// ─────────────────────────────────────────────────────────────
+// AI PROBABILITY ENGINE
+// ─────────────────────────────────────────────────────────────
 function calcProb(m, id) {
   const { hp:h, dp:d, ap:a, btts:gg, o15, o25, ca=9.5, cr=3.8 } = m;
   switch(id) {
     case "over05":  return 96;
     case "over15":  return o15;
     case "over25":  return o25;
-    case "over35":  return Math.max(o25-22,8);
-    case "over45":  return Math.max(o25-38,4);
+    case "over35":  return Math.max(o25-22, 8);
+    case "over45":  return Math.max(o25-38, 4);
     case "under15": return 100-o15;
     case "under25": return 100-o25;
     case "btts":    return gg;
-    case "btts_no": return 100-gg;
+    case "bttsno":  return 100-gg;
     case "home":    return h;
     case "draw":    return d;
     case "away":    return a;
-    case "dc1x":    return Math.min(h+d,97);
-    case "dcx2":    return Math.min(a+d,97);
-    case "dc12":    return Math.min(h+a,97);
-    case "dnbh":    return Math.min(Math.round(h+d*0.5),93);
-    case "dnba":    return Math.min(Math.round(a+d*0.5),93);
+    case "dc1x":    return Math.min(h+d, 97);
+    case "dcx2":    return Math.min(a+d, 97);
+    case "dc12":    return Math.min(h+a, 97);
+    case "dnbh":    return Math.min(Math.round(h+d*0.5), 93);
+    case "dnba":    return Math.min(Math.round(a+d*0.5), 93);
     case "csh":     return Math.round(h*0.55);
     case "csa":     return Math.round(a*0.50);
     case "htft":    return Math.round(h*0.62);
-    case "wehh":    return Math.min(Math.round(h*1.18+o15*0.12),88);
-    case "weha":    return Math.min(Math.round(a*1.20+o15*0.10),76);
+    case "wehh":    return Math.min(Math.round(h*1.18+o15*0.12), 88);
+    case "weha":    return Math.min(Math.round(a*1.20+o15*0.10), 76);
     case "ahch":    return Math.round(h*0.92);
     case "ahca":    return Math.round(a*0.92);
-    case "ehch":    return Math.min(Math.round(h+d*0.75),94);
-    case "ehca":    return Math.min(Math.round(a+d*0.75),88);
+    case "ehch":    return Math.min(Math.round(h+d*0.75), 94);
+    case "ehca":    return Math.min(Math.round(a+d*0.75), 88);
     case "co85":    return ca>=10?72:ca>=9?58:45;
     case "co95":    return ca>=10?61:ca>=9?47:34;
     case "co105":   return ca>=10?49:ca>=9?36:24;
@@ -198,78 +230,89 @@ function calcProb(m, id) {
     case "aao25":   return Math.round(a*o25/100*1.1);
     case "hagg":    return Math.round(h*gg/100*1.1);
     case "aagg":    return Math.round(a*gg/100*1.1);
-    case "hoo25":   return Math.min(Math.round(h+o25-h*o25/100),96);
-    case "hogg":    return Math.min(Math.round(h+gg-h*gg/100),96);
-    case "aoo25":   return Math.min(Math.round(a+o25-a*o25/100),96);
-    case "hou25":   return Math.min(Math.round(h+(100-o25)-h*(100-o25)/100),96);
-    case "aou25":   return Math.min(Math.round(a+(100-o25)-a*(100-o25)/100),96);
+    case "hoo25":   return Math.min(Math.round(h+o25-h*o25/100), 96);
+    case "hogg":    return Math.min(Math.round(h+gg-h*gg/100), 96);
+    case "aoo25":   return Math.min(Math.round(a+o25-a*o25/100), 96);
+    case "hou25":   return Math.min(Math.round(h+(100-o25)-h*(100-o25)/100), 96);
+    case "aou25":   return Math.min(Math.round(a+(100-o25)-a*(100-o25)/100), 96);
     default: return h;
   }
 }
 
 function fScore(f="") {
-  return f.slice(-5).split("").reduce((s,c)=>s+(c==="W"?3:c==="D"?1:0),0)/15;
+  return f.slice(-5).split("").reduce((s,c)=>s+(c==="W"?3:c==="D"?1:0), 0) / 15;
 }
 
 function calcAI(m, id) {
-  const p = calcProb(m,id)/100;
-  const c = (m.conf||70)/100;
-  const f = (fScore(m.hForm)+fScore(m.aForm))/2;
-  const v = Math.min(Math.max(p-(m.hodd?1/m.hodd:p),0)/0.15,1);
-  const t = m.tier===1?0.33:m.tier===2?0.22:0.11;
-  return Math.min(Math.round((p*0.38+c*0.22+f*0.20+v*0.10+t*0.10)*100),99);
+  const p = calcProb(m, id) / 100;
+  const c = (m.conf||70) / 100;
+  const f = (fScore(m.hForm) + fScore(m.aForm)) / 2;
+  const v = Math.min(Math.max(p - (m.hodd ? 1/m.hodd : p), 0) / 0.15, 1);
+  const t = m.tier===1 ? 0.33 : m.tier===2 ? 0.22 : 0.11;
+  return Math.min(Math.round((p*0.38 + c*0.22 + f*0.20 + v*0.10 + t*0.10)*100), 99);
 }
 
 function pickBest(m, allowed) {
-  let best=allowed[0], top=0;
-  for(const id of allowed){ const s=calcAI(m,id); if(s>top){top=s;best=id;} }
-  return { id:best, score:top, prob:calcProb(m,best) };
+  let best = allowed[0], top = 0;
+  for (const id of allowed) {
+    const s = calcAI(m, id);
+    if (s > top) { top = s; best = id; }
+  }
+  return { id:best, score:top, prob:calcProb(m, best) };
 }
 
-// ─── TINY UI COMPONENTS ───────────────────────────────────────
+// ─────────────────────────────────────────────────────────────
+// UI COMPONENTS
+// ─────────────────────────────────────────────────────────────
 const Spin = ({s=16,c="#00ff88"}) => (
   <span style={{width:s,height:s,border:`2px solid ${c}22`,borderTopColor:c,borderRadius:"50%",display:"inline-block",animation:"spin .7s linear infinite",flexShrink:0}}/>
 );
 const Bar = ({v,c}) => {
-  const col=c||(v>=68?"#00ff88":v>=50?"#f0c040":"#ff6b6b");
+  const col = c||(v>=68?"#00ff88":v>=50?"#f0c040":"#ff6b6b");
   return <div style={{height:4,background:"rgba(255,255,255,.06)",borderRadius:99,overflow:"hidden"}}><div style={{width:`${Math.min(v,100)}%`,height:"100%",background:col,borderRadius:99,transition:"width 1s"}}/></div>;
 };
-const Chip = ({t,c="#00ff88"}) => (
+const Tag = ({t,c="#00ff88"}) => (
   <span style={{background:`${c}18`,border:`1px solid ${c}40`,color:c,fontSize:9,fontWeight:800,padding:"2px 7px",borderRadius:99,whiteSpace:"nowrap"}}>{t}</span>
 );
-const Form = ({r}) => {
-  const bg=r==="W"?"#00ff88":r==="D"?"#f0c040":"#ff6b6b";
+const Dot = ({r}) => {
+  const bg = r==="W"?"#00ff88":r==="D"?"#f0c040":"#ff6b6b";
   return <span style={{width:16,height:16,borderRadius:4,background:bg,display:"inline-flex",alignItems:"center",justifyContent:"center",fontSize:8,fontWeight:900,color:"#000"}}>{r}</span>;
 };
 
-// ─── MATCH CARD ───────────────────────────────────────────────
-function MatchCard({m, best, idx}) {
-  const [open,setOpen]=useState(false);
+// ─────────────────────────────────────────────────────────────
+// MATCH CARD
+// ─────────────────────────────────────────────────────────────
+function Card({m, best, idx}) {
+  const [open, setOpen] = useState(false);
   const mkt = MARKETS.find(x=>x.id===best.id);
   const pc = best.prob>=68?"#00ff88":best.prob>=50?"#f0c040":"#ff6b6b";
   const sc = best.score>=75?"#00ff88":best.score>=55?"#f0c040":"#ff6b6b";
+
   return (
-    <div style={{animation:`fadeUp .3s ease ${idx*.04}s both`,marginBottom:10}}>
+    <div style={{animation:`slideUp .3s ease ${idx*.04}s both`,marginBottom:10}}>
       <div style={{background:"rgba(255,255,255,.025)",border:"1px solid rgba(255,255,255,.06)",borderRadius:16,overflow:"hidden"}}>
         <div style={{padding:"13px 14px"}}>
-          {/* Header */}
+          {/* League + time */}
+          <div style={{fontSize:10,color:"#555",marginBottom:6}}>
+            {m.flag} {m.league} · {m.time}
+          </div>
+          {/* Teams + prob */}
           <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:10}}>
             <div style={{flex:1,paddingRight:8}}>
-              <div style={{fontSize:10,color:"#555",marginBottom:5}}>{m.country&&`${m.country} · `}{m.league} · {m.time}</div>
               <div style={{fontSize:15,fontWeight:800,color:"#eee",lineHeight:1.2}}>{m.home}</div>
               <div style={{fontSize:10,color:"#333",margin:"3px 0"}}>vs</div>
               <div style={{fontSize:15,fontWeight:800,color:"#eee"}}>{m.away}</div>
-              <div style={{marginTop:7,display:"inline-flex",gap:5,alignItems:"center",background:"rgba(167,139,250,.10)",border:"1px solid rgba(167,139,250,.2)",borderRadius:8,padding:"3px 9px"}}>
+              <div style={{marginTop:8,display:"inline-flex",gap:5,alignItems:"center",background:"rgba(167,139,250,.10)",border:"1px solid rgba(167,139,250,.2)",borderRadius:8,padding:"4px 9px"}}>
                 <span style={{fontSize:9,color:"#a78bfa"}}>🤖 AI picks:</span>
                 <span style={{fontSize:10,fontWeight:800,color:"#a78bfa"}}>{mkt?.label}</span>
               </div>
             </div>
-            <div style={{background:`${pc}14`,border:`1px solid ${pc}33`,borderRadius:10,padding:"6px 10px",textAlign:"center",minWidth:62}}>
+            <div style={{background:`${pc}14`,border:`1px solid ${pc}33`,borderRadius:10,padding:"7px 10px",textAlign:"center",minWidth:64}}>
               <div style={{fontSize:22,fontWeight:900,color:pc,fontFamily:"monospace",lineHeight:1}}>{best.prob}%</div>
-              <div style={{fontSize:8,color:"#444",marginTop:2}}>{mkt?.short}</div>
+              <div style={{fontSize:8,color:"#555",marginTop:2}}>{mkt?.short}</div>
             </div>
           </div>
-          {/* Odds row */}
+          {/* 1X2 */}
           <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:5,marginBottom:10}}>
             {[["1 HOME",m.hodd,m.hp],["X DRAW",m.dodd,m.dp],["2 AWAY",m.aodd,m.ap]].map(([l,o,p])=>(
               <div key={l} style={{background:"rgba(255,255,255,.04)",borderRadius:8,padding:"6px 4px",textAlign:"center"}}>
@@ -279,9 +322,9 @@ function MatchCard({m, best, idx}) {
               </div>
             ))}
           </div>
-          {/* Stats row */}
+          {/* Stats */}
           <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:5,marginBottom:10}}>
-            {[["Corners",m.ca||"?"],["Cards",m.cr||"?"],["O2.5",m.o25+"%"]].map(([l,v])=>(
+            {[["Avg Corners",m.ca||"?"],["Avg Cards",m.cr||"?"],["Over 2.5",m.o25+"%"]].map(([l,v])=>(
               <div key={l} style={{background:"rgba(255,255,255,.03)",borderRadius:7,padding:"5px 4px",textAlign:"center"}}>
                 <div style={{fontSize:8,color:"#2a2a2a"}}>{l}</div>
                 <div style={{fontSize:11,fontWeight:800,color:"#666"}}>{v}</div>
@@ -295,19 +338,18 @@ function MatchCard({m, best, idx}) {
           </div>
           <Bar v={best.score} c={sc}/>
         </div>
-        {/* Expand button */}
-        <button onClick={()=>setOpen(!open)} style={{width:"100%",background:"rgba(255,255,255,.02)",border:"none",borderTop:"1px solid rgba(255,255,255,.04)",color:"#2a2a2a",fontSize:9,cursor:"pointer",padding:"7px",letterSpacing:.5}}>
-          {open?"▲ HIDE MARKETS":"▼ VIEW ALL 43 MARKETS"}
+        <button onClick={()=>setOpen(!open)} style={{width:"100%",background:"rgba(255,255,255,.02)",border:"none",borderTop:"1px solid rgba(255,255,255,.04)",color:"#2a2a2a",fontSize:9,cursor:"pointer",padding:"8px",letterSpacing:.5}}>
+          {open?"▲ HIDE ALL MARKETS":"▼ VIEW ALL 43 MARKETS"}
         </button>
         {open && (
-          <div style={{padding:"12px 14px",borderTop:"1px solid rgba(255,255,255,.04)"}}>
+          <div style={{padding:"12px 14px",borderTop:"1px solid rgba(255,255,255,.04)",animation:"slideUp .2s ease"}}>
             {MCATS.map(cat=>(
               <div key={cat} style={{marginBottom:10}}>
                 <div style={{fontSize:9,color:"#333",letterSpacing:.5,marginBottom:5}}>{cat.toUpperCase()}</div>
                 <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:3}}>
                   {MARKETS.filter(mk=>mk.cat===cat).map(mk=>{
-                    const p=calcProb(m,mk.id);
-                    const chosen=mk.id===best.id;
+                    const p = calcProb(m, mk.id);
+                    const chosen = mk.id === best.id;
                     return (
                       <div key={mk.id} style={{background:chosen?"rgba(167,139,250,.1)":"rgba(255,255,255,.02)",border:chosen?"1px solid rgba(167,139,250,.3)":"1px solid transparent",borderRadius:7,padding:"4px 7px",display:"flex",justifyContent:"space-between",alignItems:"center"}}>
                         <span style={{fontSize:9,color:chosen?"#a78bfa":"#3a3a3a"}}>{mk.label}{chosen?" 🤖":""}</span>
@@ -318,12 +360,11 @@ function MatchCard({m, best, idx}) {
                 </div>
               </div>
             ))}
-            {/* Form */}
             <div style={{display:"flex",flexDirection:"column",gap:6,marginTop:8}}>
               {[["HOME",m.hForm],["AWAY",m.aForm]].map(([s,f])=>(
                 <div key={s} style={{display:"flex",alignItems:"center",gap:8}}>
                   <span style={{fontSize:9,color:"#333",width:36}}>{s}</span>
-                  <div style={{display:"flex",gap:3}}>{(f||"WDLWW").slice(-5).split("").map((r,i)=><Form key={i} r={r}/>)}</div>
+                  <div style={{display:"flex",gap:3}}>{(f||"WDLWW").slice(-5).split("").map((r,i)=><Dot key={i} r={r}/>)}</div>
                 </div>
               ))}
             </div>
@@ -334,49 +375,51 @@ function MatchCard({m, best, idx}) {
   );
 }
 
-// ─── PRESETS ──────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────
+// PRESETS
+// ─────────────────────────────────────────────────────────────
 const PRESETS = [
-  {l:"🥅 Safe Goals",    ids:["over05","over15","btts","hoo25"]},
-  {l:"🏆 Results",       ids:["home","dc1x","dcx2","dnbh","wehh"]},
-  {l:"🎪 Combos",        ids:["hoo25","hogg","aoo25","hao25","hagg"]},
-  {l:"📐 Handicap",      ids:["ahch","ahca","ehch","ehca"]},
-  {l:"⚽ Corners",       ids:["co85","co95","co105","cu85"]},
-  {l:"🟨 Cards",         ids:["cdo35","cdo45","cdu35"]},
-  {l:"⚡ AI Best Mix",   ids:["over15","home","dc1x","btts","over25","dcx2","wehh","hoo25","co95"]},
-  {l:"🎯 All 43",        ids:MARKETS.map(m=>m.id)},
+  { l:"🥅 Safe Goals",   ids:["over05","over15","btts","hoo25"] },
+  { l:"🏆 Results",      ids:["home","dc1x","dcx2","dnbh","wehh"] },
+  { l:"🎪 Combos",       ids:["hoo25","hogg","aoo25","hao25","hagg"] },
+  { l:"📐 Handicap",     ids:["ahch","ahca","ehch","ehca"] },
+  { l:"⚽ Corners",      ids:["co85","co95","co105","cu85"] },
+  { l:"🟨 Cards",        ids:["cdo35","cdo45","cdu35"] },
+  { l:"⚡ AI Best Mix",  ids:["over15","home","dc1x","btts","over25","dcx2","wehh","hoo25","co95"] },
+  { l:"🎯 All 43",       ids:MARKETS.map(m=>m.id) },
 ];
 
-// ─── MAIN APP ─────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────
+// MAIN APP
+// ─────────────────────────────────────────────────────────────
 export default function App() {
-  const [tab, setTab]         = useState("build");
+  const [tab, setTab]       = useState("build");
   const [matches, setMatches] = useState([]);
   const [loading, setLoading] = useState(false);
   const [isLive, setIsLive]   = useState(false);
-  const [liveErr, setLiveErr] = useState("");
+  const [errMsg, setErrMsg]   = useState("");
 
-  // Filters
-  const [legs, setLegs]         = useState(3);
-  const [days, setDays]         = useState([0,1]);
-  const [allowed, setAllowed]   = useState(["over15","home","dc1x","btts","over25","dcx2","wehh","hoo25"]);
-  const [mcat, setMcat]         = useState("Goals");
-  const [minP, setMinP]         = useState(55);
-  const [minS, setMinS]         = useState(45);
-  const [valMode, setValMode]   = useState(false);
-  const [showLT, setShowLT]     = useState(false);
+  const [legs, setLegs]       = useState(3);
+  const [days, setDays]       = useState([0,1,2,3,4,5,6]);
+  const [allowed, setAllowed] = useState(["over15","home","dc1x","btts","over25","dcx2","wehh","hoo25"]);
+  const [mcat, setMcat]       = useState("Goals");
+  const [minP, setMinP]       = useState(50);
+  const [minS, setMinS]       = useState(40);
+  const [valMode, setValMode] = useState(false);
+  const [showLT, setShowLT]   = useState(false);
 
-  // Acca
-  const [picks, setPicks]         = useState([]);
-  const [generating, setGenerating] = useState(false);
-  const [aiText, setAiText]       = useState("");
-  const [aiLoad, setAiLoad]       = useState(false);
-  const [history, setHistory]     = useState([]);
-  const [copied, setCopied]       = useState(false);
+  const [picks, setPicks]     = useState([]);
+  const [generating, setGen]  = useState(false);
+  const [aiText, setAiText]   = useState("");
+  const [aiLoad, setAiLoad]   = useState(false);
+  const [history, setHistory] = useState([]);
+  const [copied, setCopied]   = useState(false);
 
   useEffect(() => { load(); }, []);
 
   async function load() {
     setLoading(true);
-    setLiveErr("");
+    setErrMsg("");
     if (!HAS_KEY) {
       setMatches(DEMO);
       setIsLive(false);
@@ -384,28 +427,38 @@ export default function App() {
       return;
     }
     try {
-      const events = await getLiveMatches();
-      const upcoming = events
-        .filter(ev => ev.status?.type === "notstarted" && ev.homeTeam && ev.awayTeam)
-        .map(parseEvent);
-      if (upcoming.length > 0) {
-        setMatches(upcoming);
+      const live = await fetchMatches();
+      if (live.length > 0) {
+        setMatches(live);
         setIsLive(true);
       } else {
         setMatches(DEMO);
         setIsLive(false);
-        setLiveErr("No upcoming matches found for today/tomorrow. Showing demo.");
+        setErrMsg("No upcoming matches found this week. Showing demo data.");
       }
-    } catch (e) {
+    } catch(e) {
       setMatches(DEMO);
       setIsLive(false);
-      setLiveErr("API error: " + e.message + ". Showing demo data.");
+      setErrMsg("Could not load live data. Showing demo.");
     }
     setLoading(false);
   }
 
+  const dayStr = (offset=0) => {
+    const d = new Date();
+    d.setDate(d.getDate() + offset);
+    return d.toISOString().split("T")[0];
+  };
+  const dayLabel = (offset) => {
+    if (offset===0) return "Today";
+    if (offset===1) return "Tomorrow";
+    const d = new Date();
+    d.setDate(d.getDate() + offset);
+    return d.toLocaleDateString("en-GB",{weekday:"short",day:"numeric",month:"short"});
+  };
+
   const filtered = matches.filter(m => {
-    const inDay = days.some(d => fmt(d) === m.date);
+    const inDay = days.some(d => dayStr(d) === m.date);
     const b = pickBest(m, allowed);
     const valOk = valMode ? b.prob > (100/(m.hodd||2))*1.05 : true;
     return inDay && b.prob >= minP && b.score >= minS && valOk;
@@ -421,54 +474,54 @@ export default function App() {
 
   async function generate() {
     if (!filtered.length) return;
-    setGenerating(true); setPicks([]); setAiText("");
+    setGen(true); setPicks([]); setAiText("");
     await new Promise(r=>setTimeout(r,700));
     const scored = filtered
       .map(m => { const b=pickBest(m,allowed); return {...m,_b:b}; })
       .sort((a,b) => b._b.score - a._b.score);
     const np = scored.slice(0,legs).map(m=>({
-      match: m, id: m._b.id, prob: m._b.prob, score: m._b.score,
-      label: MARKETS.find(x=>x.id===m._b.id)?.label||m._b.id,
+      match:m, id:m._b.id, prob:m._b.prob, score:m._b.score,
+      label: MARKETS.find(x=>x.id===m._b.id)?.label || m._b.id,
     }));
     setPicks(np);
-    setGenerating(false);
+    setGen(false);
     const odds = np.reduce((a,p)=>a*(1/Math.max(p.prob/100,0.01)),1);
     const wc   = np.reduce((a,p)=>a*(p.prob/100),1)*100;
     setHistory(prev=>[{
       date: new Date().toLocaleDateString("en-GB",{day:"numeric",month:"short"}),
-      legs, result:"Pending", odds:odds.toFixed(2),
+      legs, result:"Pending", odds: odds.toFixed(2),
       picks: np.map(p=>`${p.match.home} vs ${p.match.away} — ${p.label}`),
     },...prev.slice(0,19)]);
 
-    // Claude AI analysis
     setAiLoad(true);
     try {
-      if (!ANTHROPIC_KEY) throw new Error("NO_ANTHROPIC_KEY");
-      const detail = np.map(p=>`${p.match.home} vs ${p.match.away} [${p.match.league}] — AI picked: ${p.label} (${p.prob}%, score ${p.score}/100), form H:${p.match.hForm||"?"} A:${p.match.aForm||"?"}, BTTS:${p.match.btts}%, Over2.5:${p.match.o25}%`).join("\n");
+      if (!ANTHROPIC_KEY) throw new Error("NO_KEY");
+      const detail = np.map(p=>`${p.match.home} vs ${p.match.away} [${p.match.league}] — AI picked: ${p.label} (${p.prob}%, score ${p.score}/100), BTTS:${p.match.btts}%, Over2.5:${p.match.o25}%, form H:${p.match.hForm||"?"} A:${p.match.aForm||"?"}`).join("\n");
       const res = await fetch("https://api.anthropic.com/v1/messages",{
         method:"POST",
         headers:{"Content-Type":"application/json","x-api-key":ANTHROPIC_KEY,"anthropic-version":"2023-06-01"},
-        body:JSON.stringify({
+        body: JSON.stringify({
           model:"claude-sonnet-4-20250514", max_tokens:1200,
-          messages:[{role:"user",content:`You are a world-class football betting analyst. The WinSmart AI engine chose the best market for each match. Analyse this ${legs}-leg accumulator:\n\n${detail}\n\nStats: Combined odds ${odds.toFixed(2)}x | Win probability ${wc.toFixed(1)}% | Historical ${legs}-leg win rate ${wr}% | Avg AI score ${avgAI}/100 | Data: ${isLive?"LIVE":"DEMO"}\n\nWrite sharp expert analysis in 4 sections:\n🎯 PICK ANALYSIS — why each market was chosen\n⚠️ RISK FACTORS — key danger per pick\n📊 ACCA OVERVIEW — overall quality\n✅ VERDICT — confidence /10, units 1-5, one key tip\n\nBe direct, specific and expert. Reference corners/cards data where relevant.`}]
+          messages:[{role:"user",content:`You are a world-class football betting analyst. Analyse this ${legs}-leg accumulator:\n\n${detail}\n\nCombined odds: ${odds.toFixed(2)}x | Win probability: ${wc.toFixed(1)}% | Historical ${legs}-leg win rate: ${wr}% | Avg AI score: ${avgAI}/100\n\nWrite sharp expert analysis:\n🎯 PICK ANALYSIS — why the AI chose each market\n⚠️ RISK FACTORS — key danger per pick\n📊 ACCA OVERVIEW — overall quality rating\n✅ VERDICT — confidence /10, stake 1-5 units, one key tip\n\nBe direct, expert and specific.`}]
         })
       });
       const data = await res.json();
       if (data.error) throw new Error(data.error.message);
-      setAiText(data.content?.map(c=>c.text||"").join("")||"Analysis unavailable.");
+      setAiText(data.content?.map(c=>c.text||"").join("") || "");
     } catch(e) {
-      if (e.message === "NO_ANTHROPIC_KEY")
+      if (e.message==="NO_KEY")
         setAiText("⚠️ Add VITE_ANTHROPIC_KEY in Vercel → Settings → Environment Variables → Redeploy to unlock AI analysis.");
       else
-        setAiText("⚠️ AI error: "+e.message);
+        setAiText("⚠️ AI error: " + e.message);
     }
     setAiLoad(false);
   }
 
   const pickTxt = () => picks.map((p,i)=>`${i+1}. ${p.match.home} vs ${p.match.away}\n   ✅ ${p.label} — ${p.prob}%\n   ${p.match.league} · ${p.match.time}`).join("\n\n");
+
   function copyAll() {
     navigator.clipboard?.writeText(`🏆 WinSmart ${legs}-Leg Acca\n\n${pickTxt()}\n\n💰 Odds: ${combOdds.toFixed(2)}x | Win: ${winChance.toFixed(1)}%\n\nacca-ai.vercel.app`);
-    setCopied(true); setTimeout(()=>setCopied(false),3000);
+    setCopied(true); setTimeout(()=>setCopied(false), 3000);
   }
   function shareWA() {
     window.open(`https://wa.me/?text=${encodeURIComponent(`🏆 WinSmart ${legs}-Leg Acca\n\n${pickTxt()}\n\n💰 Odds: ${combOdds.toFixed(2)}x\n\nacca-ai.vercel.app`)}`,"_blank");
@@ -478,32 +531,33 @@ export default function App() {
     <div style={{minHeight:"100vh",background:"#06080d",fontFamily:"'DM Sans',sans-serif",color:"#fff",maxWidth:460,margin:"0 auto"}}>
       <style>{`
         @import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;700;900&family=DM+Mono:wght@500&display=swap');
-        @keyframes fadeUp{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:translateY(0)}}
+        @keyframes slideUp{from{opacity:0;transform:translateY(12px)}to{opacity:1;transform:translateY(0)}}
         @keyframes spin{to{transform:rotate(360deg)}}
-        @keyframes pulse{0%,100%{box-shadow:0 0 20px #00ff8833}50%{box-shadow:0 0 40px #00ff8866}}
+        @keyframes pulse{0%,100%{box-shadow:0 0 20px #00ff8822}50%{box-shadow:0 0 44px #00ff8855}}
         @keyframes shimmer{0%,100%{opacity:.4}50%{opacity:1}}
         *{box-sizing:border-box;margin:0;padding:0}
-        ::-webkit-scrollbar{width:3px}::-webkit-scrollbar-thumb{background:rgba(0,255,136,.2);border-radius:99px}
+        ::-webkit-scrollbar{width:3px}
+        ::-webkit-scrollbar-thumb{background:rgba(0,255,136,.2);border-radius:99px}
         input[type=range]{-webkit-appearance:none;background:transparent;width:100%}
         input[type=range]::-webkit-slider-runnable-track{height:4px;background:rgba(255,255,255,.07);border-radius:99px}
-        input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:20px;height:20px;border-radius:50%;background:#00ff88;margin-top:-8px}
+        input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:20px;height:20px;border-radius:50%;background:#00ff88;margin-top:-8px;box-shadow:0 0 8px #00ff8855}
         button,input{font-family:inherit}
       `}</style>
 
-      {/* ── HEADER ── */}
+      {/* HEADER */}
       <div style={{position:"sticky",top:0,zIndex:100,background:"rgba(6,8,13,.96)",backdropFilter:"blur(20px)",borderBottom:"1px solid rgba(255,255,255,.05)",padding:"12px 14px 0"}}>
         <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:12}}>
           <div style={{display:"flex",alignItems:"center",gap:10}}>
-            <div style={{width:36,height:36,borderRadius:11,background:"linear-gradient(135deg,#00ff88,#00aa55)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:20}}>⚡</div>
+            <div style={{width:36,height:36,borderRadius:11,background:"linear-gradient(135deg,#00ff88,#00aa55)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:20,flexShrink:0}}>⚡</div>
             <div>
               <div style={{fontSize:19,fontWeight:900,letterSpacing:-1,lineHeight:1}}>Win<span style={{color:"#00ff88"}}>Smart</span></div>
-              <div style={{fontSize:9,color:"#2a2a2a",letterSpacing:.5}}>43 MARKETS · AI ENGINE · SOFASCORE DATA</div>
+              <div style={{fontSize:9,color:"#2a2a2a",letterSpacing:.5}}>43 MARKETS · AI ENGINE · LIVE FOOTBALL DATA</div>
             </div>
           </div>
           <div style={{display:"flex",gap:6,alignItems:"center"}}>
             {loading && <Spin s={12}/>}
             <div onClick={load} style={{cursor:"pointer"}}>
-              <Chip t={isLive?"🟢 LIVE":"⚡ DEMO"} c={isLive?"#00ff88":"#f0c040"}/>
+              <Tag t={isLive?"🟢 LIVE":"⚡ DEMO"} c={isLive?"#00ff88":"#f0c040"}/>
             </div>
           </div>
         </div>
@@ -516,23 +570,28 @@ export default function App() {
 
       <div style={{padding:"14px 12px 40px"}}>
 
-        {/* ══ BUILD TAB ══ */}
+        {/* BUILD TAB */}
         {tab==="build" && (
-          <div style={{display:"flex",flexDirection:"column",gap:12,animation:"fadeUp .3s ease"}}>
+          <div style={{display:"flex",flexDirection:"column",gap:12,animation:"slideUp .3s ease"}}>
 
-            {/* Status banner */}
+            {/* Status */}
             {!isLive ? (
-              <div style={{background:"rgba(240,192,64,.06)",border:"1px solid rgba(240,192,64,.14)",borderRadius:12,padding:"10px 13px"}}>
+              <div style={{background:"rgba(240,192,64,.06)",border:"1px solid rgba(240,192,64,.14)",borderRadius:12,padding:"11px 13px"}}>
                 <div style={{fontSize:11,color:"#f0c04099",lineHeight:1.7,marginBottom:8}}>
-                  {liveErr || (HAS_KEY ? "⏳ Loading live matches..." : "⚡ Demo mode · Add VITE_RAPIDAPI_KEY in Vercel for real live matches")}
+                  {errMsg || (HAS_KEY ? "⏳ Connecting to football-data.org..." : "⚡ Demo mode · Add VITE_FOOTBALL_KEY in Vercel to load real Premier League, La Liga, Champions League matches")}
                 </div>
+                {!HAS_KEY && (
+                  <div style={{fontSize:10,color:"#f0c04066",marginBottom:8,lineHeight:1.6}}>
+                    Get your FREE key at football-data.org → register with email → comes instantly
+                  </div>
+                )}
                 <button onClick={load} style={{padding:"5px 12px",borderRadius:8,border:"none",background:"rgba(240,192,64,.15)",color:"#f0c040",fontSize:10,fontWeight:700,cursor:"pointer"}}>
-                  {loading?"⏳ Loading...":"🔄 Try Load Live Matches"}
+                  {loading?"⏳ Loading...":"🔄 Load Live Matches"}
                 </button>
               </div>
             ) : (
-              <div style={{background:"rgba(0,255,136,.05)",border:"1px solid rgba(0,255,136,.14)",borderRadius:12,padding:"8px 13px",display:"flex",justifyContent:"space-between",alignItems:"center"}}>
-                <span style={{fontSize:11,color:"#00ff8888"}}>✅ {matches.length} live matches loaded from Sofascore</span>
+              <div style={{background:"rgba(0,255,136,.05)",border:"1px solid rgba(0,255,136,.14)",borderRadius:12,padding:"9px 13px",display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+                <span style={{fontSize:11,color:"#00ff8888"}}>✅ {matches.length} real matches loaded · Premier League, La Liga & more</span>
                 <button onClick={load} style={{padding:"3px 8px",borderRadius:7,border:"none",background:"rgba(0,255,136,.1)",color:"#00ff88",fontSize:10,fontWeight:700,cursor:"pointer"}}>🔄</button>
               </div>
             )}
@@ -540,16 +599,16 @@ export default function App() {
             {/* LEGS */}
             <div style={{background:"rgba(255,255,255,.02)",border:"1px solid rgba(255,255,255,.05)",borderRadius:14,padding:14}}>
               <div style={{display:"flex",justifyContent:"space-between",marginBottom:10}}>
-                <span style={{fontSize:9,color:"#333",letterSpacing:1}}>LEGS <span style={{color:"#00ff88"}}>(3–50)</span></span>
-                <span style={{fontSize:10,color:"#555"}}>Historical win rate: <strong style={{color:"#f0c040"}}>{wr}%</strong></span>
+                <span style={{fontSize:9,color:"#333",letterSpacing:1}}>ACCA LEGS <span style={{color:"#00ff88"}}>(3–50)</span></span>
+                <span style={{fontSize:10,color:"#555"}}>Win rate: <strong style={{color:"#f0c040"}}>{wr}%</strong></span>
               </div>
               <div style={{display:"flex",gap:5,flexWrap:"wrap",marginBottom:10}}>
                 {[3,4,5,6,8,10,12,15,20,25,30,40,50].map(n=>(
-                  <button key={n} onClick={()=>{setLegs(n);setPicks([]);}} style={{padding:"6px 11px",borderRadius:9,border:"none",background:legs===n?"#00ff88":"rgba(255,255,255,.06)",color:legs===n?"#000":"#555",fontSize:12,fontWeight:900,cursor:"pointer"}}>{n}</button>
+                  <button key={n} onClick={()=>{setLegs(n);setPicks([]);}} style={{padding:"6px 11px",borderRadius:9,border:"none",background:legs===n?"#00ff88":"rgba(255,255,255,.06)",color:legs===n?"#000":"#555",fontSize:12,fontWeight:900,cursor:"pointer",transition:"all .15s"}}>{n}</button>
                 ))}
               </div>
               <div style={{display:"flex",gap:8}}>
-                <input type="number" min={3} max={50} value={legs} onChange={e=>{setLegs(Math.min(50,Math.max(3,+e.target.value)));setPicks([]);}} style={{flex:1,background:"rgba(255,255,255,.05)",border:"1px solid rgba(255,255,255,.08)",borderRadius:9,padding:"7px 12px",color:"#fff",fontSize:13,outline:"none"}} placeholder="Custom legs 3-50"/>
+                <input type="number" min={3} max={50} value={legs} onChange={e=>{setLegs(Math.min(50,Math.max(3,+e.target.value)));setPicks([]);}} style={{flex:1,background:"rgba(255,255,255,.05)",border:"1px solid rgba(255,255,255,.08)",borderRadius:9,padding:"7px 12px",color:"#fff",fontSize:13,outline:"none"}} placeholder="Custom 3-50"/>
                 <button onClick={()=>setShowLT(!showLT)} style={{padding:"7px 12px",borderRadius:9,border:"1px solid rgba(255,255,255,.08)",background:"rgba(255,255,255,.04)",color:"#555",fontSize:10,fontWeight:700,cursor:"pointer"}}>{showLT?"Hide":"Win %"}</button>
               </div>
               {showLT && (
@@ -568,14 +627,14 @@ export default function App() {
 
             {/* DATES */}
             <div style={{background:"rgba(255,255,255,.02)",border:"1px solid rgba(255,255,255,.05)",borderRadius:14,padding:14}}>
-              <div style={{fontSize:9,color:"#333",letterSpacing:1,marginBottom:10}}>MATCH DATES <span style={{color:"#00ff88"}}>· SELECT ANY COMBINATION</span></div>
+              <div style={{fontSize:9,color:"#333",letterSpacing:1,marginBottom:10}}>MATCH DATES <span style={{color:"#00ff88"}}>· TAP ANY COMBINATION</span></div>
               <div style={{display:"flex",gap:6,flexWrap:"wrap",marginBottom:8}}>
                 {[0,1,2,3,4,5,6].map(d=>(
-                  <button key={d} onClick={()=>toggleDay(d)} style={{padding:"6px 12px",borderRadius:10,border:"none",background:days.includes(d)?"#00ff88":"rgba(255,255,255,.06)",color:days.includes(d)?"#000":"#555",fontSize:11,fontWeight:800,cursor:"pointer",transition:"all .15s"}}>{dayName(d)}</button>
+                  <button key={d} onClick={()=>toggleDay(d)} style={{padding:"6px 12px",borderRadius:10,border:"none",background:days.includes(d)?"#00ff88":"rgba(255,255,255,.06)",color:days.includes(d)?"#000":"#555",fontSize:11,fontWeight:800,cursor:"pointer",transition:"all .15s"}}>{dayLabel(d)}</button>
                 ))}
                 <button onClick={()=>setDays([0,1,2,3,4,5,6])} style={{padding:"6px 12px",borderRadius:10,border:"none",background:"rgba(0,255,136,.1)",color:"#00ff88",fontSize:11,fontWeight:800,cursor:"pointer"}}>All 7</button>
               </div>
-              <div style={{fontSize:10,color:"#333"}}>Showing: <span style={{color:"#00ff88"}}>{days.map(d=>dayName(d)).join(", ")}</span></div>
+              <div style={{fontSize:10,color:"#333"}}>Showing: <span style={{color:"#00ff88"}}>{days.map(d=>dayLabel(d)).join(", ")}</span></div>
             </div>
 
             {/* MARKETS */}
@@ -591,7 +650,7 @@ export default function App() {
               </div>
               <div style={{display:"flex",gap:5,flexWrap:"wrap",marginBottom:12}}>
                 {MARKETS.filter(m=>m.cat===mcat).map(m=>{
-                  const on=allowed.includes(m.id);
+                  const on = allowed.includes(m.id);
                   return (
                     <button key={m.id} onClick={()=>toggleMkt(m.id)} style={{padding:"6px 10px",borderRadius:8,border:"none",background:on?"rgba(0,255,136,.14)":"rgba(255,255,255,.04)",color:on?"#00ff88":"#555",fontSize:11,fontWeight:700,cursor:"pointer",outline:on?"1px solid rgba(0,255,136,.35)":"none",transition:"all .15s"}}>
                       {m.label} <span style={{fontSize:8,color:on?"#00ff8855":"#1a1a1a"}}>·{m.wr}%</span>
@@ -601,7 +660,7 @@ export default function App() {
               </div>
               <div style={{padding:"8px 10px",background:"rgba(0,255,136,.05)",borderRadius:9,border:"1px solid rgba(0,255,136,.1)",marginBottom:10}}>
                 <div style={{fontSize:9,color:"#333",marginBottom:5}}>SELECTED ({allowed.length} markets)</div>
-                <div style={{display:"flex",gap:3,flexWrap:"wrap"}}>{allowed.map(id=>{const m=MARKETS.find(x=>x.id===id);return<Chip key={id} t={m?.short||id} c="#00ff88"/>;})}</div>
+                <div style={{display:"flex",gap:3,flexWrap:"wrap"}}>{allowed.map(id=>{const m=MARKETS.find(x=>x.id===id);return<Tag key={id} t={m?.short||id} c="#00ff88"/>;})}</div>
               </div>
               <div style={{fontSize:9,color:"#333",marginBottom:6}}>QUICK PRESETS:</div>
               <div style={{display:"flex",gap:5,flexWrap:"wrap"}}>
@@ -617,10 +676,10 @@ export default function App() {
                   <span style={{fontSize:11,color:"#666"}}>Min Probability</span>
                   <span style={{fontSize:18,fontWeight:900,color:"#00ff88",fontFamily:"DM Mono,monospace"}}>{minP}%</span>
                 </div>
-                <input type="range" min={30} max={92} value={minP} onChange={e=>setMinP(+e.target.value)} style={{cursor:"pointer"}}/>
+                <input type="range" min={30} max={92} value={minP} onChange={e=>setMinP(+e.target.value)}/>
                 <div style={{display:"flex",justifyContent:"space-between",marginTop:4}}>
                   <span style={{fontSize:8,color:"#1a1a1a"}}>30% — More picks</span>
-                  <span style={{fontSize:8,color:"#1a1a1a"}}>92% — Ultra safe only</span>
+                  <span style={{fontSize:8,color:"#1a1a1a"}}>92% — Ultra safe</span>
                 </div>
               </div>
               <div>
@@ -628,12 +687,12 @@ export default function App() {
                   <span style={{fontSize:11,color:"#666"}}>Min AI Score</span>
                   <span style={{fontSize:18,fontWeight:900,color:"#a78bfa",fontFamily:"DM Mono,monospace"}}>{minS}/100</span>
                 </div>
-                <input type="range" min={0} max={90} value={minS} onChange={e=>setMinS(+e.target.value)} style={{cursor:"pointer"}}/>
+                <input type="range" min={0} max={90} value={minS} onChange={e=>setMinS(+e.target.value)}/>
               </div>
               <div onClick={()=>setValMode(!valMode)} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"10px 12px",background:"rgba(255,255,255,.03)",borderRadius:10,cursor:"pointer"}}>
                 <div>
                   <div style={{fontSize:11,color:"#888",fontWeight:700}}>Value Edge Mode</div>
-                  <div style={{fontSize:9,color:"#333"}}>Only show picks where prob beats the bookmaker odds</div>
+                  <div style={{fontSize:9,color:"#333"}}>Only picks where probability beats bookmaker odds</div>
                 </div>
                 <div style={{width:40,height:22,borderRadius:99,background:valMode?"#00ff88":"rgba(255,255,255,.08)",position:"relative",transition:"background .2s",flexShrink:0}}>
                   <div style={{position:"absolute",top:3,left:valMode?21:3,width:16,height:16,borderRadius:"50%",background:"#fff",transition:"left .2s"}}/>
@@ -641,27 +700,27 @@ export default function App() {
               </div>
             </div>
 
-            {/* AVAILABLE MATCHES */}
+            {/* MATCHES LIST */}
             <div>
               <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}>
-                <span style={{fontSize:9,color:"#333",letterSpacing:1}}>AVAILABLE MATCHES <span style={{color:"#00ff88"}}>({filtered.length})</span></span>
+                <span style={{fontSize:9,color:"#333",letterSpacing:1}}>AVAILABLE <span style={{color:"#00ff88"}}>({filtered.length} matches)</span></span>
                 {loading && <div style={{display:"flex",gap:4,alignItems:"center",fontSize:9,color:"#f0c040"}}><Spin s={10} c="#f0c040"/> Loading...</div>}
               </div>
               {filtered.length===0 ? (
                 <div style={{background:"rgba(255,107,107,.05)",border:"1px solid rgba(255,107,107,.1)",borderRadius:14,padding:28,textAlign:"center"}}>
                   <div style={{fontSize:30,marginBottom:8}}>🔍</div>
                   <div style={{fontSize:13,color:"#ff6b6b88",fontWeight:700}}>No matches found</div>
-                  <div style={{fontSize:11,color:"#222",marginTop:4}}>Try different dates or lower your filters</div>
+                  <div style={{fontSize:11,color:"#222",marginTop:4}}>Try selecting more dates or lower the filters</div>
                 </div>
               ) : filtered.map((m,i)=>{
-                const b=pickBest(m,allowed);
-                return <MatchCard key={m.id} m={m} best={b} idx={i}/>;
+                const b = pickBest(m, allowed);
+                return <Card key={m.id} m={m} best={b} idx={i}/>;
               })}
             </div>
 
             {/* ACCA SUMMARY */}
             {picks.length>0 && (
-              <div style={{background:"linear-gradient(135deg,rgba(0,255,136,.07),rgba(0,180,80,.03))",border:"1px solid rgba(0,255,136,.18)",borderRadius:16,padding:16,animation:"fadeUp .3s ease"}}>
+              <div style={{background:"linear-gradient(135deg,rgba(0,255,136,.07),rgba(0,180,80,.03))",border:"1px solid rgba(0,255,136,.18)",borderRadius:16,padding:16,animation:"slideUp .3s ease"}}>
                 <div style={{fontSize:9,color:"#00ff8855",letterSpacing:1,marginBottom:12}}>YOUR {picks.length}-LEG SMART ACCA</div>
                 <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr 1fr",gap:8,marginBottom:14}}>
                   {[["ODDS",combOdds.toFixed(2)+"x","#fff"],["WIN %",winChance.toFixed(1)+"%","#00ff88"],["LEGS",picks.length,"#a78bfa"],["AI AVG",avgAI+"/100","#f0c040"]].map(([l,v,c])=>(
@@ -672,14 +731,14 @@ export default function App() {
                   ))}
                 </div>
                 <div style={{background:"rgba(0,0,0,.3)",borderRadius:10,padding:12,marginBottom:12}}>
-                  <div style={{fontSize:9,color:"#333",marginBottom:8,letterSpacing:.5}}>YOUR PICKS — ADD ON SPORTYBET</div>
+                  <div style={{fontSize:9,color:"#333",marginBottom:8,letterSpacing:.5}}>YOUR PICKS — ADD THESE ON SPORTYBET</div>
                   {picks.map((p,i)=>(
                     <div key={i} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"7px 0",borderBottom:"1px solid rgba(255,255,255,.04)"}}>
                       <div>
                         <div style={{fontSize:11,fontWeight:700,color:"#eee"}}>{p.match.home} vs {p.match.away}</div>
-                        <div style={{fontSize:9,color:"#444"}}>{p.match.league} · {p.match.time}</div>
+                        <div style={{fontSize:9,color:"#444"}}>{p.match.flag} {p.match.league} · {p.match.time}</div>
                       </div>
-                      <Chip t={MARKETS.find(m=>m.id===p.id)?.short||p.id} c="#00ff88"/>
+                      <Tag t={MARKETS.find(m=>m.id===p.id)?.short||p.id} c="#00ff88"/>
                     </div>
                   ))}
                 </div>
@@ -700,21 +759,21 @@ export default function App() {
               </div>
             )}
 
-            {/* GENERATE */}
+            {/* GENERATE BUTTON */}
             <button onClick={generate} disabled={generating||filtered.length===0} style={{width:"100%",padding:"18px",borderRadius:14,border:"none",background:generating?"rgba(0,255,136,.08)":"linear-gradient(135deg,#00ff88,#00cc60)",color:generating?"#00ff88":"#000",fontSize:15,fontWeight:900,cursor:generating||filtered.length===0?"not-allowed":"pointer",animation:!generating&&filtered.length>0?"pulse 2.5s ease-in-out infinite":"none",display:"flex",alignItems:"center",justifyContent:"center",gap:10,transition:"all .3s"}}>
-              {generating?<><Spin/> AI Analysing Matches...</>:`✦ Auto-Generate ${legs}-Leg Smart Acca`}
+              {generating?<><Spin/> AI Selecting Best Markets...</>:`✦ Auto-Generate ${legs}-Leg Smart Acca`}
             </button>
-            <div style={{textAlign:"center",fontSize:9,color:"#1a1a1a",marginTop:4}}>AI picks the single best market per match · All 43 markets considered</div>
+            <div style={{textAlign:"center",fontSize:9,color:"#1a1a1a",marginTop:4}}>AI picks the best market per match · All 43 markets considered</div>
           </div>
         )}
 
-        {/* ══ AI TAB ══ */}
+        {/* AI TAB */}
         {tab==="ai" && (
-          <div style={{animation:"fadeUp .3s ease",display:"flex",flexDirection:"column",gap:12}}>
+          <div style={{animation:"slideUp .3s ease",display:"flex",flexDirection:"column",gap:12}}>
             {picks.length===0 ? (
               <div style={{textAlign:"center",padding:60}}>
                 <div style={{fontSize:48,marginBottom:12}}>🤖</div>
-                <div style={{fontSize:15,fontWeight:700,color:"#222"}}>No acca generated yet</div>
+                <div style={{fontSize:15,fontWeight:700,color:"#222"}}>No acca yet</div>
                 <div style={{fontSize:11,color:"#1a1a1a",marginTop:6}}>Go to Build → tap Auto-Generate</div>
               </div>
             ) : (
@@ -725,7 +784,7 @@ export default function App() {
                     <div key={i} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"8px 0",borderBottom:"1px solid rgba(255,255,255,.04)"}}>
                       <div>
                         <div style={{fontSize:12,fontWeight:700,color:"#eee"}}>{p.match.home} vs {p.match.away}</div>
-                        <div style={{fontSize:10,color:"#444"}}>{p.match.league} · <span style={{color:"#a78bfa"}}>{p.label}</span></div>
+                        <div style={{fontSize:10,color:"#444"}}>{p.match.flag} {p.match.league} · <span style={{color:"#a78bfa"}}>{p.label}</span></div>
                       </div>
                       <div style={{textAlign:"right"}}>
                         <div style={{fontSize:15,fontWeight:900,color:"#00ff88",fontFamily:"monospace"}}>{p.prob}%</div>
@@ -747,26 +806,29 @@ export default function App() {
                     <span style={{fontSize:20}}>🤖</span>
                     <div>
                       <div style={{fontSize:12,fontWeight:800,color:"#a78bfa"}}>WINSMART AI ANALYST</div>
-                      <div style={{fontSize:9,color:"#222"}}>Powered by Claude AI · Expert betting intelligence</div>
+                      <div style={{fontSize:9,color:"#222"}}>Powered by Claude AI</div>
                     </div>
                     {aiLoad && <Spin c="#a78bfa"/>}
                   </div>
-                  {aiLoad ? <div style={{fontSize:12,color:"#1a1a1a",animation:"shimmer 1.5s ease infinite",lineHeight:1.8}}>Analysing {picks.length} picks across all markets...</div>
-                  : aiText ? <div style={{fontSize:12,color:"#888",lineHeight:1.9,whiteSpace:"pre-wrap"}}>{aiText}</div>
-                  : <div style={{fontSize:11,color:"#222"}}>Generate an acca first to see analysis.</div>}
+                  {aiLoad
+                    ? <div style={{fontSize:12,color:"#1a1a1a",animation:"shimmer 1.5s ease infinite",lineHeight:1.8}}>Analysing {picks.length} picks...</div>
+                    : aiText
+                      ? <div style={{fontSize:12,color:"#888",lineHeight:1.9,whiteSpace:"pre-wrap"}}>{aiText}</div>
+                      : <div style={{fontSize:11,color:"#222"}}>Generate an acca to see analysis.</div>
+                  }
                 </div>
                 <div style={{display:"flex",gap:8}}>
                   <button onClick={generate} style={{flex:1,padding:"13px",borderRadius:12,border:"none",background:"rgba(0,255,136,.08)",color:"#00ff88",fontSize:12,fontWeight:800,cursor:"pointer"}}>🔄 Regenerate</button>
-                  <button onClick={copyAll} style={{flex:1,padding:"13px",borderRadius:12,border:"none",background:"rgba(0,255,136,.08)",color:"#00ff88",fontSize:12,fontWeight:800,cursor:"pointer"}}>📋 Copy Picks</button>
+                  <button onClick={copyAll} style={{flex:1,padding:"13px",borderRadius:12,border:"none",background:"rgba(0,255,136,.08)",color:"#00ff88",fontSize:12,fontWeight:800,cursor:"pointer"}}>📋 Copy</button>
                 </div>
               </>
             )}
           </div>
         )}
 
-        {/* ══ STATS TAB ══ */}
+        {/* STATS TAB */}
         {tab==="stats" && (
-          <div style={{animation:"fadeUp .3s ease",display:"flex",flexDirection:"column",gap:12}}>
+          <div style={{animation:"slideUp .3s ease",display:"flex",flexDirection:"column",gap:12}}>
             <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10}}>
               {[["TOTAL ACCAS","559","#00ff88"],["WIN RATE","28.7%","#f0c040"],["PICK ACCURACY","83.9%","#a78bfa"],["BEST HIT","18.14x","#00ff88"]].map(([l,v,c])=>(
                 <div key={l} style={{background:"rgba(255,255,255,.025)",border:"1px solid rgba(255,255,255,.05)",borderRadius:14,padding:14}}>
@@ -775,9 +837,9 @@ export default function App() {
                 </div>
               ))}
             </div>
-            <div style={{background:"rgba(0,255,136,.05)",border:"1px solid rgba(0,255,136,.1)",borderRadius:12,padding:"10px 13px"}}>
-              <div style={{fontSize:11,color:"#00ff88",fontWeight:700,marginBottom:4}}>💡 Pro Tip</div>
-              <div style={{fontSize:11,color:"#00ff8888",lineHeight:1.6}}>3-5 leg accas hit most often. Use AI Best Mix preset for highest probability selections. Always stake responsibly.</div>
+            <div style={{background:"rgba(0,255,136,.05)",border:"1px solid rgba(0,255,136,.1)",borderRadius:12,padding:"11px 13px"}}>
+              <div style={{fontSize:11,color:"#00ff88",fontWeight:700,marginBottom:5}}>💡 Pro Tip</div>
+              <div style={{fontSize:11,color:"#00ff8888",lineHeight:1.6}}>3–5 leg accas hit most often. Use the AI Best Mix preset. Always bet responsibly.</div>
             </div>
             <div style={{background:"rgba(255,255,255,.025)",border:"1px solid rgba(255,255,255,.05)",borderRadius:14,padding:16}}>
               <div style={{fontSize:9,color:"#333",letterSpacing:1,marginBottom:14}}>ACCA WIN RATES BY LEGS</div>
@@ -806,9 +868,9 @@ export default function App() {
           </div>
         )}
 
-        {/* ══ HISTORY TAB ══ */}
+        {/* HISTORY TAB */}
         {tab==="history" && (
-          <div style={{animation:"fadeUp .3s ease"}}>
+          <div style={{animation:"slideUp .3s ease"}}>
             {history.length===0 ? (
               <div style={{textAlign:"center",padding:60}}>
                 <div style={{fontSize:40,marginBottom:12}}>📋</div>
@@ -821,12 +883,10 @@ export default function App() {
                   <span style={{fontSize:11,color:"#555"}}>{h.date} · {h.legs}-leg</span>
                   <div style={{display:"flex",gap:8,alignItems:"center"}}>
                     <span style={{fontSize:14,fontWeight:900,color:"#a78bfa",fontFamily:"monospace"}}>{h.odds}x</span>
-                    <Chip t={h.result} c={h.result==="WON"?"#00ff88":h.result==="LOST"?"#ff6b6b":"#f0c040"}/>
+                    <Tag t={h.result} c={h.result==="WON"?"#00ff88":h.result==="LOST"?"#ff6b6b":"#f0c040"}/>
                   </div>
                 </div>
-                {h.picks.map((p,j)=>(
-                  <div key={j} style={{fontSize:10,color:"#333",padding:"3px 0",borderTop:"1px solid rgba(255,255,255,.03)"}}>· {p}</div>
-                ))}
+                {h.picks.map((p,j)=><div key={j} style={{fontSize:10,color:"#333",padding:"3px 0",borderTop:"1px solid rgba(255,255,255,.03)"}}>· {p}</div>)}
               </div>
             ))}
           </div>
