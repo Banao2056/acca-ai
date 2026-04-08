@@ -364,9 +364,9 @@ const calcProb = function(m, id) { return trueProb(m, id); };
 function Spin(props) {
   const s = props.s || 16;
   const c = props.c || '#00ff88';
-  return React.createElement('span', {
-    style: { width:s, height:s, border:'2px solid '+c+'22', borderTopColor:c, borderRadius:'50%', display:'inline-block', animation:'spin .7s linear infinite', flexShrink:0 }
-  });
+  return (
+    <span style={{ width:s, height:s, border:'2px solid '+c+'22', borderTopColor:c, borderRadius:'50%', display:'inline-block', animation:'spin .7s linear infinite', flexShrink:0 }} />
+  );
 }
 
 function Bar(props) {
